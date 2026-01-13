@@ -252,19 +252,47 @@ synthesize_video_from_material(
 
 ## 输入文件要求
 
+需要在 `video_gen/harrypotter/resource/` 目录下准备以下文件：
+
+```
+video_gen/harrypotter/resource/
+├── harrypotter.m4b      # 完整有声书 (可选，处理多章时使用)
+├── chapter1.m4b         # 单章音频 (可选，处理单章时优先使用)
+├── chapter2.m4b
+├── ...
+├── harrypotter.txt      # 英文原文 (必需，用于 ASR 校正)
+└── harrypotter_cn.txt   # 中文翻译 (必需，用于翻译参考)
+```
+
 ### M4B 音频文件
 
 - 格式: M4B (带章节的 AAC 音频容器)
-- 建议放在 `video_gen/harrypotter/resource/` 目录
+- 可以是完整有声书 `harrypotter.m4b`，或单章文件 `chapter1.m4b`
+- 单章文件命名格式: `chapter{N}.m4b`，程序会优先使用
 
 ### 参考文本文件
 
-- `harrypotter.txt`: 英文原文，用于 ASR 校正
-- `harrypotter_cn.txt`: 中文翻译，用于翻译参考
+**harrypotter.txt** (英文原文)
+- 用于 ASR 转录校正，提高准确率
+- 每章以 `CHAPTER ONE`、`CHAPTER TWO` 等格式开头
 
-文件格式要求：
-- 每章以 `CHAPTER ONE` / `第１章` 等格式开头
-- transformer 会自动提取对应章节内容
+**harrypotter_cn.txt** (中文翻译)
+- 用于翻译参考，确保人名、地名等术语一致
+- 每章以 `第１章`、`第２章` 或 `第一章`、`第二章` 格式开头
+
+示例章节格式：
+```
+CHAPTER ONE
+The Boy Who Lived
+
+Mr. and Mrs. Dursley, of number four, Privet Drive...
+```
+
+```
+第１章　大难不死的男孩
+
+家住女贞路四号的德思礼夫妇总是得意地说...
+```
 
 ## 输出文件
 
