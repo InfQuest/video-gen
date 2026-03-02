@@ -579,10 +579,11 @@ class HarryPotterTransformer:
             }
             # Support both "CHAPTER ONE" and "Chapter 1" formats
             # Use (?:^|\n) to ensure chapter title is at line start (not in sentence)
-            current_pattern = rf"(?:^|\n)\s*CHAPTER\s+(?:{num_words.get(chapter_num, 'XX')}|{chapter_num})\b"
+            # Support optional dash before CHAPTER: - (hyphen), – (en-dash), — (em-dash)
+            current_pattern = rf"(?:^|\n)\s*[–—-]?\s*CHAPTER\s+(?:{num_words.get(chapter_num, 'XX')}|{chapter_num})\b"
             if chapter_num < 20:
                 next_word = num_words.get(chapter_num + 1, "XX")
-                next_pattern = rf"(?:^|\n)\s*CHAPTER\s+(?:{next_word}|{chapter_num + 1})\b"
+                next_pattern = rf"(?:^|\n)\s*[–—-]?\s*CHAPTER\s+(?:{next_word}|{chapter_num + 1})\b"
             else:
                 next_pattern = None
 
