@@ -11,3 +11,7 @@ wheels/
 
 # outputs & scripts
 outputs
+
+# Secrets (unencrypted only - encrypted secrets.yaml should be committed)
+.env
+secrets.yaml
