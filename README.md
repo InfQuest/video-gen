@@ -15,7 +15,7 @@ video_gen/
 │   ├── __init__.py
 │   ├── configs/
 │   │   ├── __init__.py
-│   │   └── config.py              # 配置管理 (从 .env 读取 API keys)
+│   │   └── config.py              # 配置管理 (从 secrets.yaml 读取 API keys)
 │   └── tools/
 │       ├── __init__.py
 │       ├── openai_client.py       # OpenAI API 客户端 (支持代理)
@@ -57,7 +57,7 @@ video_gen/
 
 ### `video_gen/core/configs/config.py`
 
-从 `.env` 文件读取配置：
+从 `secrets.yaml` 文件读取配置：
 
 ```python
 from video_gen.core.configs.config import settings
@@ -142,23 +142,31 @@ cd ~/code/video-gen
 uv sync
 ```
 
-### 配置环境变量
+### 配置 API 密钥
 
-创建 `.env` 文件：
+项目使用 [sops](https://github.com/getsops/sops) 加密管理 API 密钥。
+
+#### 解密密钥文件
 
 ```bash
-# 必需
-OPENAI_API_KEY=your_openai_api_key
-
-# 可选 (场景图片生成)
-VOLCENGINE_API_KEY=your_volcengine_api_key
-
-# 可选 (S3 存储)
-AWS_ACCESS_KEY_ID=your_aws_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret
+# 使用 sops 解密 secrets.enc.yaml 生成 secrets.yaml
+sops -d secrets.enc.yaml > secrets.yaml
 ```
 
+#### 密钥文件格式 (secrets.yaml)
+
+```yaml
+openai_api_key: your_openai_api_key
+volcengine_api_key: your_volcengine_api_key  # 可选 (场景图片生成)
+aws_access_key_id: your_aws_key              # 可选 (S3 存储)
+aws_secret_access_key: your_aws_secret       # 可选 (S3 存储)
+```
+
+**注意**: `secrets.yaml` 已在 `.gitignore` 中，不会被提交到 Git。加密版本 `secrets.enc.yaml` 可安全提交。
+
 ## 使用方法
+
+详细使用说明请参考 [USAGE.md](USAGE.md)。
 
 ### 命令行
 
