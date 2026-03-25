@@ -546,13 +546,22 @@ class HarryPotterTransformer:
                 15: "(15|１５|十五)",
                 16: "(16|１６|十六)",
                 17: "(17|１７|十七)",
+                18: "(18|１８|十八)",
+                19: "(19|１９|十九)",
+                20: "(20|２０|二十)",
+                21: "(21|２１|二十一)",
+                22: "(22|２２|二十二)",
             }
             if chapter_num not in num_map:
                 logger.error(f"Chapter number {chapter_num} not supported for Chinese")
                 return None
 
-            current_pattern = rf"第{num_map[chapter_num]}章"
-            next_pattern = rf"第{num_map.get(chapter_num + 1, '[0-9]+')}章" if chapter_num < 10 else None
+            current_pattern = rf"第\s*{num_map[chapter_num]}\s*章"
+            # Only create next_pattern if the next chapter exists in num_map
+            if chapter_num + 1 in num_map:
+                next_pattern = rf"第\s*{num_map[chapter_num + 1]}\s*章"
+            else:
+                next_pattern = None
         else:
             # English patterns: "CHAPTER ONE" or "Chapter 1"
             num_words = {
@@ -576,13 +585,16 @@ class HarryPotterTransformer:
                 18: "EIGHTEEN",
                 19: "NINETEEN",
                 20: "TWENTY",
+                21: "TWENTY-ONE",
+                22: "TWENTY-TWO",
             }
             # Support both "CHAPTER ONE" and "Chapter 1" formats
             # Use (?:^|\n) to ensure chapter title is at line start (not in sentence)
             # Support optional dash before CHAPTER: - (hyphen), – (en-dash), — (em-dash)
             current_pattern = rf"(?:^|\n)\s*[–—-]?\s*CHAPTER\s+(?:{num_words.get(chapter_num, 'XX')}|{chapter_num})\b"
-            if chapter_num < 20:
-                next_word = num_words.get(chapter_num + 1, "XX")
+            # Only create next_pattern if the next chapter exists in num_words
+            if chapter_num + 1 in num_words:
+                next_word = num_words[chapter_num + 1]
                 next_pattern = rf"(?:^|\n)\s*[–—-]?\s*CHAPTER\s+(?:{next_word}|{chapter_num + 1})\b"
             else:
                 next_pattern = None
