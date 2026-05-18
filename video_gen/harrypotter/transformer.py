@@ -159,6 +159,7 @@ class HarryPotterTransformer:
         audio_path: str,
         reference_text: str,
         llm_client=None,
+        llm_cache_dir: str | None = None,
     ) -> list[TranscriptSegment]:
         """Correct transcript using reference text and align with word-level timestamps.
 
@@ -172,6 +173,7 @@ class HarryPotterTransformer:
             audio_path: Path to audio file for alignment
             reference_text: Reference text for correction
             llm_client: Optional LLM client. If None, will create one automatically.
+            llm_cache_dir: Optional directory for per-batch LLM cache (resume-safe).
 
         Returns:
             List of corrected and aligned TranscriptSegment objects
@@ -197,7 +199,7 @@ class HarryPotterTransformer:
         logger.info(f"  Reference text length: {len(reference_text)} characters")
 
         # Correct the transcript using corrector
-        corrector = TranscriptCorrector(llm_client)
+        corrector = TranscriptCorrector(llm_client, llm_cache_dir=llm_cache_dir)
         corrected_texts = corrector.correct(
             transcript=transcript,
             reference_text=reference_text,
@@ -406,6 +408,7 @@ class HarryPotterTransformer:
         transcript: list[TranscriptSegment],
         reference_text: str,
         llm_client=None,
+        llm_cache_dir: str | None = None,
     ) -> list[TranscriptSegment]:
         """Translate transcript to Chinese using reference text.
 
@@ -416,6 +419,7 @@ class HarryPotterTransformer:
             transcript: English transcript segments to translate
             reference_text: Official Chinese translation reference text
             llm_client: Optional LLM client. If None, will create one automatically.
+            llm_cache_dir: Optional directory for per-batch LLM cache (resume-safe).
 
         Returns:
             List of TranscriptSegment objects with Chinese translations in trans["zh"]
@@ -439,7 +443,7 @@ class HarryPotterTransformer:
         logger.info(f"  Reference text length: {len(reference_text)} characters")
 
         # Translate the transcript using translator
-        translator = TranscriptTranslator(llm_client)
+        translator = TranscriptTranslator(llm_client, llm_cache_dir=llm_cache_dir)
         chinese_translations = translator.translate(
             transcript=transcript,
             reference_text=reference_text,
@@ -725,6 +729,9 @@ class HarryPotterTransformer:
         else:
             os.makedirs(output_dir, exist_ok=True)
 
+        llm_cache_dir = os.path.join(output_dir, ".llm_cache", f"chapter_{chapter.id}")
+        os.makedirs(llm_cache_dir, exist_ok=True)
+
         # Sanitize chapter title for filename
         safe_title = re.sub(r'[<>:"/\\|?*]', "-", chapter.title)
         safe_title = safe_title.strip()
@@ -811,6 +818,7 @@ class HarryPotterTransformer:
                     transcript=transcript,
                     audio_path=output_path,
                     reference_text=reference_text,
+                    llm_cache_dir=llm_cache_dir,
                 )
 
         # Split long segments if requested (after alignment, before translation)
@@ -858,6 +866,7 @@ class HarryPotterTransformer:
             transcript = HarryPotterTransformer.translate_transcript(
                 transcript=transcript,
                 reference_text=chinese_reference_text,
+                llm_cache_dir=llm_cache_dir,
             )
             logger.info("Transcript translation completed!")
 
@@ -868,7 +877,7 @@ class HarryPotterTransformer:
             scene_detector = SceneDetector()
 
             # Detect scenes from transcript
-            scene_result = scene_detector.detect_scenes(transcript)
+            scene_result = scene_detector.detect_scenes(transcript, llm_cache_dir=llm_cache_dir)
             logger.info(f"Detected {len(scene_result.scenes)} unique scenes")
             logger.info(f"Generated {len(scene_result.scene_segments)} scene-segment mappings")
 
@@ -960,17 +969,12 @@ class HarryPotterTransformer:
 
             output_files.append(video_output_path)  # Track video file
 
-        # TODO: Track cache files from WhisperX, corrector, translator
-        # For now, we can scan the cache directory for recently modified files
-        cache_dir = "/tmp/cached"
-        if os.path.exists(cache_dir):
-            current_time = os.path.getmtime(output_path)  # Use audio file time as reference
-            # Include cache files modified around the same time (within 1 hour)
-            for cache_file in os.listdir(cache_dir):
-                if cache_file.endswith(".pkl"):
-                    cache_path = os.path.join(cache_dir, cache_file)
-                    if abs(os.path.getmtime(cache_path) - current_time) < 3600:  # Within 1 hour
-                        cache_files.append(cache_path)
+        llm_cache_root = os.path.join(output_dir, ".llm_cache")
+        if os.path.isdir(llm_cache_root):
+            for root, _dirs, files in os.walk(llm_cache_root):
+                for fname in files:
+                    if fname.endswith(".pkl"):
+                        cache_files.append(os.path.join(root, fname))
 
         # Create final AudiobookChapterMaterial with all tracked files
         material = AudiobookChapterMaterial(

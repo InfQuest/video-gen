@@ -1,12 +1,16 @@
 """Transcript translator for Harry Potter audiobook materials."""
 
+import hashlib
 import time
 from typing import TYPE_CHECKING, List
 
 from loguru import logger
 
-from video_gen.common.tools import cached
+from video_gen.common.tools import llm_disk_cache_load, llm_disk_cache_save
 from video_gen.video_material import TranscriptSegment
+
+# Bump when TRANSLATION_PROMPT text changes to invalidate on-disk caches.
+TRANSLATION_PROMPT_VERSION = 1
 
 if TYPE_CHECKING:
     from video_gen.core.tools.openai_client import OpenAIClient
@@ -110,13 +114,15 @@ Important:
 class TranscriptTranslator:
     """Translates English transcript to Chinese using reference text and LLM."""
 
-    def __init__(self, llm_client: "OpenAIClient"):
+    def __init__(self, llm_client: "OpenAIClient", llm_cache_dir: str | None = None):
         """Initialize the translator.
 
         Args:
             llm_client: OpenAI-compatible client for LLM calls
+            llm_cache_dir: Optional directory for per-batch LLM result cache (resume-safe).
         """
         self.llm_client = llm_client
+        self.llm_cache_dir = llm_cache_dir
 
     def _translate_batch(
         self,
@@ -148,6 +154,20 @@ class TranscriptTranslator:
 {english_segments_text}"""
 
         logger.info(f"Translating batch: segments {start_idx}-{start_idx + batch_size - 1} ({batch_size} segments)")
+
+        model_name = getattr(self.llm_client, "_model_name", "")
+        cache_key = (
+            TRANSLATION_PROMPT_VERSION,
+            model_name,
+            start_idx,
+            batch_size,
+            tuple(seg.text for seg in segments),
+            hashlib.sha256(system_prompt.encode("utf-8")).hexdigest(),
+            hashlib.sha256(user_input.encode("utf-8")).hexdigest(),
+        )
+        cached_batch = llm_disk_cache_load(self.llm_cache_dir, "translation", cache_key)
+        if cached_batch is not None:
+            return cached_batch
 
         # Retry logic with exponential backoff
         max_retries = 10
@@ -193,9 +213,9 @@ class TranscriptTranslator:
             logger.error(error_msg)
             raise ValueError(error_msg)
 
+        llm_disk_cache_save(self.llm_cache_dir, "translation", cache_key, translated_segments)
         return translated_segments
 
-    @cached(cache_dir="/tmp/cached", exclude_params=["self"])
     def translate(
         self,
         transcript: List[TranscriptSegment],

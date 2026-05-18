@@ -116,6 +116,56 @@ def cached(cache_dir: str, exclude_params: Optional[List[str]] = None) -> Callab
     return decorator
 
 
+def llm_disk_cache_load(cache_root: Optional[str], namespace: str, key_payload: Any) -> Any:
+    """Load a value from disk cache if present and valid.
+
+    Args:
+        cache_root: Root directory for LLM caches (e.g. output_dir/.llm_cache/chapter_1).
+        namespace: Subfolder under cache_root (e.g. correction, translation, scenes).
+        key_payload: Pickle-serializable object whose hash selects the cache file.
+
+    Returns:
+        Unpickled value, or None if cache_root is falsy / miss / corrupted.
+    """
+    if not cache_root:
+        return None
+    serialized = pickle.dumps(key_payload)
+    key_hash = hashlib.sha256(serialized).hexdigest()
+    subdir = os.path.join(cache_root, namespace)
+    cache_file = os.path.join(subdir, f"{key_hash}.pkl")
+
+    if not os.path.exists(cache_file):
+        return None
+    try:
+        with open(cache_file, "rb") as f:
+            logger.info(f"Loading LLM cache hit: {namespace}/{key_hash[:12]}...")
+            return pickle.load(f)
+    except (pickle.PickleError, EOFError, OSError) as e:
+        logger.warning(f"Failed to load LLM cache {cache_file}: {e}. Re-computing.")
+        try:
+            os.remove(cache_file)
+        except OSError:
+            pass
+    return None
+
+
+def llm_disk_cache_save(cache_root: Optional[str], namespace: str, key_payload: Any, value: Any) -> None:
+    """Persist a value to disk after a successful validated LLM result."""
+    if not cache_root:
+        return
+    serialized = pickle.dumps(key_payload)
+    key_hash = hashlib.sha256(serialized).hexdigest()
+    subdir = os.path.join(cache_root, namespace)
+    os.makedirs(subdir, exist_ok=True)
+    cache_file = os.path.join(subdir, f"{key_hash}.pkl")
+    try:
+        with open(cache_file, "wb") as f:
+            pickle.dump(value, f)
+        logger.info(f"Saved LLM cache: {namespace}/{key_hash[:12]}...")
+    except (pickle.PickleError, OSError) as e:
+        logger.warning(f"Failed to save LLM cache to {cache_file}: {e}")
+
+
 def get_ffmpeg_path() -> Optional[str]:
     """Get path to ffmpeg if available on the current system. First looks at PATH, then checks if
     one is available from the `imageio_ffmpeg` package. Returns None if ffmpeg couldn't be found.

@@ -1,5 +1,6 @@
 """Transcript corrector for Harry Potter audiobook materials."""
 
+import hashlib
 import re
 import time
 from difflib import SequenceMatcher
@@ -7,8 +8,11 @@ from typing import TYPE_CHECKING, List, Optional
 
 from loguru import logger
 
-from video_gen.common.tools import cached
+from video_gen.common.tools import llm_disk_cache_load, llm_disk_cache_save
 from video_gen.video_material import TranscriptSegment
+
+# Bump when CORRECTION_PROMPT text changes to invalidate on-disk caches.
+CORRECTION_PROMPT_VERSION = 1
 
 if TYPE_CHECKING:
     from video_gen.core.tools.openai_client import OpenAIClient
@@ -147,13 +151,15 @@ Important:
 class TranscriptCorrector:
     """Corrects ASR transcript errors using reference text and LLM."""
 
-    def __init__(self, llm_client: "OpenAIClient"):
+    def __init__(self, llm_client: "OpenAIClient", llm_cache_dir: str | None = None):
         """Initialize the corrector.
 
         Args:
             llm_client: OpenAI-compatible client for LLM calls
+            llm_cache_dir: Optional directory for per-batch LLM result cache (resume-safe).
         """
         self.llm_client = llm_client
+        self.llm_cache_dir = llm_cache_dir
 
     def _find_best_match_position(self, search_text: str, reference_text: str) -> tuple[int, float]:
         """Find the best match position for search_text in reference_text using fuzzy matching.
@@ -299,6 +305,23 @@ class TranscriptCorrector:
 
         logger.info(f"Correcting batch: segments {start_idx}-{start_idx + batch_size - 1} ({batch_size} segments)")
 
+        model_name = getattr(self.llm_client, "_model_name", "")
+        ref_sha = hashlib.sha256(reference_text.encode("utf-8")).hexdigest()
+        cache_key = (
+            CORRECTION_PROMPT_VERSION,
+            model_name,
+            ref_sha,
+            token_padding,
+            start_idx,
+            batch_size,
+            tuple(seg.text for seg in segments),
+            hashlib.sha256(system_prompt.encode("utf-8")).hexdigest(),
+            hashlib.sha256(user_input.encode("utf-8")).hexdigest(),
+        )
+        cached_batch = llm_disk_cache_load(self.llm_cache_dir, "correction", cache_key)
+        if cached_batch is not None:
+            return cached_batch
+
         # Retry logic with exponential backoff
         max_retries = 10
         retry_delay = 3  # seconds
@@ -329,6 +352,7 @@ class TranscriptCorrector:
                         f"Segment count mismatch: expected {batch_size}, got {len(corrected_segments)}"
                     )
 
+                llm_disk_cache_save(self.llm_cache_dir, "correction", cache_key, corrected_segments)
                 return corrected_segments
 
             except Exception as e:
@@ -344,7 +368,6 @@ class TranscriptCorrector:
         # Should not reach here, but just in case
         raise RuntimeError("Unexpected: exited retry loop without returning or raising")
 
-    @cached(cache_dir="/tmp/cached", exclude_params=["self"])
     def correct(
         self,
         transcript: List[TranscriptSegment],

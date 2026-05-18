@@ -4,6 +4,7 @@ This module analyzes transcript segments to identify scene changes and generates
 first-person POV image generation prompts for each unique scene.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -16,7 +17,7 @@ from pydantic import BaseModel
 from video_gen.core.configs.config import settings
 from video_gen.core.tools.openai_client import OpenAIClient
 from video_gen.core.tools.volcengine_client import VolcengineImageClient
-from video_gen.common.tools import cached
+from video_gen.common.tools import llm_disk_cache_load, llm_disk_cache_save
 from video_gen.video_material import TranscriptSegment
 
 
@@ -147,17 +148,78 @@ Important:
 - scene_idx must reference a valid scene in the "scenes" array
 """  # noqa: E501
 
+# Bump when SCENE_DETECTION_PROMPT text changes to invalidate on-disk caches.
+SCENE_DETECTION_PROMPT_VERSION = 1
 
-@cached(cache_dir="/tmp/cached", exclude_params=["llm_client"])
+
+def _parse_scene_detection_llm_data(
+    data: dict,
+    transcript: List[TranscriptSegment],
+) -> SceneDetectionResult:
+    """Build SceneDetectionResult from LLM JSON object using current transcript timings."""
+    if "scenes" not in data or "scene_segments" not in data:
+        raise ValueError(f"LLM response missing required keys. Got: {list(data.keys())}")
+
+    scenes = [Scene(**scene_data) for scene_data in data["scenes"]]
+    logger.info(f"Parsed {len(scenes)} unique scenes")
+
+    scene_segments: List[SceneSegment] = []
+    for seg_data in data["scene_segments"]:
+        if "start_segment" not in seg_data or "end_segment" not in seg_data or "scene_idx" not in seg_data:
+            logger.warning(f"Skipping scene segment with missing required fields: {seg_data}")
+            continue
+
+        start_idx = seg_data["start_segment"] - 1
+        end_idx = seg_data["end_segment"] - 1
+
+        if start_idx < 0 or end_idx >= len(transcript):
+            logger.warning(f"Invalid segment range: {start_idx + 1}-{end_idx + 1}, skipping")
+            continue
+
+        start_time = transcript[start_idx].start_at
+        end_time = transcript[end_idx].end_at
+
+        scene_segment = SceneSegment(
+            start_segment=seg_data["start_segment"],
+            end_segment=seg_data["end_segment"],
+            start_time=start_time,
+            end_time=end_time,
+            scene_idx=seg_data["scene_idx"],
+        )
+        scene_segments.append(scene_segment)
+
+    logger.info(f"Parsed {len(scene_segments)} scene-segment mappings")
+
+    scene_indices = {scene.idx for scene in scenes}
+    for seg in scene_segments:
+        if seg.scene_idx not in scene_indices:
+            logger.warning(f"Scene segment references non-existent scene_idx: {seg.scene_idx}")
+
+    result = SceneDetectionResult(scenes=scenes, scene_segments=scene_segments)
+
+    scene_usage: dict[int, int] = {}
+    for seg in scene_segments:
+        scene_usage[seg.scene_idx] = scene_usage.get(seg.scene_idx, 0) + 1
+
+    logger.info("Scene reuse statistics:")
+    for scene in scenes:
+        usage = scene_usage.get(scene.idx, 0)
+        logger.info(f"  Scene {scene.idx}: '{scene.description}' used {usage} times")
+
+    return result
+
+
 def detect_scenes_with_prompts(
     transcript: List[TranscriptSegment],
     llm_client: "OpenAIClient",
+    cache_dir: str | None = None,
 ) -> SceneDetectionResult:
     """Detect scenes and generate image prompts using LLM.
 
     Args:
         transcript: List of transcript segments
         llm_client: OpenAI-compatible client (configured with model)
+        cache_dir: Optional directory for LLM JSON cache (parsed payload, timings from transcript)
 
     Returns:
         SceneDetectionResult with scenes and scene_segments
@@ -176,6 +238,19 @@ def detect_scenes_with_prompts(
 {transcript_text}
 
 Analyze the above transcript and identify distinct scenes. Return JSON with "scenes" and "scene_segments"."""
+
+    model_name = getattr(llm_client, "_model_name", "")
+    transcript_sig = tuple((seg.text, seg.start_at, seg.end_at) for seg in transcript)
+    scene_cache_key = (
+        SCENE_DETECTION_PROMPT_VERSION,
+        model_name,
+        transcript_sig,
+        hashlib.sha256(SCENE_DETECTION_PROMPT.encode("utf-8")).hexdigest(),
+        hashlib.sha256(user_input.encode("utf-8")).hexdigest(),
+    )
+    cached_data = llm_disk_cache_load(cache_dir, "scenes", scene_cache_key)
+    if isinstance(cached_data, dict):
+        return _parse_scene_detection_llm_data(cached_data, transcript)
 
     # Call LLM
     logger.info("Calling LLM for scene detection...")
@@ -205,64 +280,11 @@ Analyze the above transcript and identify distinct scenes. Return JSON with "sce
         logger.error(f"Response: {response[:500]}...")
         raise ValueError(f"LLM returned invalid JSON: {e}")
 
-    # Validate structure
     if "scenes" not in data or "scene_segments" not in data:
         raise ValueError(f"LLM response missing required keys. Got: {list(data.keys())}")
 
-    # Parse scenes
-    scenes = [Scene(**scene_data) for scene_data in data["scenes"]]
-    logger.info(f"Parsed {len(scenes)} unique scenes")
-
-    # Parse scene segments and add timing information
-    scene_segments = []
-    for seg_data in data["scene_segments"]:
-        # Validate required fields
-        if "start_segment" not in seg_data or "end_segment" not in seg_data or "scene_idx" not in seg_data:
-            logger.warning(f"Skipping scene segment with missing required fields: {seg_data}")
-            continue
-
-        start_idx = seg_data["start_segment"] - 1  # Convert to 0-indexed
-        end_idx = seg_data["end_segment"] - 1
-
-        # Validate indices
-        if start_idx < 0 or end_idx >= len(transcript):
-            logger.warning(f"Invalid segment range: {start_idx + 1}-{end_idx + 1}, skipping")
-            continue
-
-        # Get timing from transcript
-        start_time = transcript[start_idx].start_at
-        end_time = transcript[end_idx].end_at
-
-        scene_segment = SceneSegment(
-            start_segment=seg_data["start_segment"],
-            end_segment=seg_data["end_segment"],
-            start_time=start_time,
-            end_time=end_time,
-            scene_idx=seg_data["scene_idx"],
-        )
-        scene_segments.append(scene_segment)
-
-    logger.info(f"Parsed {len(scene_segments)} scene-segment mappings")
-
-    # Validate scene indices
-    scene_indices = {scene.idx for scene in scenes}
-    for seg in scene_segments:
-        if seg.scene_idx not in scene_indices:
-            logger.warning(f"Scene segment references non-existent scene_idx: {seg.scene_idx}")
-
-    result = SceneDetectionResult(scenes=scenes, scene_segments=scene_segments)
-
-    # Log scene reuse statistics
-    scene_usage = {}
-    for seg in scene_segments:
-        scene_usage[seg.scene_idx] = scene_usage.get(seg.scene_idx, 0) + 1
-
-    logger.info("Scene reuse statistics:")
-    for scene in scenes:
-        usage = scene_usage.get(scene.idx, 0)
-        logger.info(f"  Scene {scene.idx}: '{scene.description}' used {usage} times")
-
-    return result
+    llm_disk_cache_save(cache_dir, "scenes", scene_cache_key, data)
+    return _parse_scene_detection_llm_data(data, transcript)
 
 
 class SceneDetector:
@@ -282,16 +304,19 @@ class SceneDetector:
         else:
             self.llm_client = llm_client
 
-    def detect_scenes(self, transcript: List[TranscriptSegment]) -> SceneDetectionResult:
+    def detect_scenes(self, transcript: List[TranscriptSegment], llm_cache_dir: str | None = None) -> SceneDetectionResult:
         """Detect scenes in transcript.
 
         Args:
             transcript: List of transcript segments
+            llm_cache_dir: Optional directory for LLM scene-detection cache.
 
         Returns:
             SceneDetectionResult with scenes and scene_segments
         """
-        return detect_scenes_with_prompts(transcript=transcript, llm_client=self.llm_client)
+        return detect_scenes_with_prompts(
+            transcript=transcript, llm_client=self.llm_client, cache_dir=llm_cache_dir
+        )
 
     def generate_scene_images(
         self,
