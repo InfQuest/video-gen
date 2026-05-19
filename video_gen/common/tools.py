@@ -88,11 +88,18 @@ def cached(cache_dir: str, exclude_params: Optional[List[str]] = None) -> Callab
             if os.path.exists(cache_file):
                 try:
                     with open(cache_file, "rb") as f:
+                        loaded = pickle.load(f)
+                    if loaded is None:
+                        logger.info(f"Ignoring cached None; recomputing {cache_file}")
+                        try:
+                            os.remove(cache_file)
+                        except OSError:
+                            pass
+                    else:
                         logger.info(f"Loading cached result from {cache_file}")
-                        return pickle.load(f)
+                        return loaded
                 except (pickle.PickleError, EOFError, OSError) as e:
                     logger.warning(f"Failed to load cache from {cache_file}: {e}. Re-computing...")
-                    # If cache is corrupted, delete it and continue to recompute
                     try:
                         os.remove(cache_file)
                     except OSError:
@@ -101,13 +108,13 @@ def cached(cache_dir: str, exclude_params: Optional[List[str]] = None) -> Callab
             # Compute result
             result = func(*args, **kwargs)
 
-            # Try to save to cache
-            try:
-                with open(cache_file, "wb") as f:
-                    pickle.dump(result, f)
-                logger.info(f"Saved result to cache: {cache_file}")
-            except (pickle.PickleError, OSError) as e:
-                logger.warning(f"Failed to save cache to {cache_file}: {e}")
+            if result is not None:
+                try:
+                    with open(cache_file, "wb") as f:
+                        pickle.dump(result, f)
+                    logger.info(f"Saved result to cache: {cache_file}")
+                except (pickle.PickleError, OSError) as e:
+                    logger.warning(f"Failed to save cache to {cache_file}: {e}")
 
             return result
 

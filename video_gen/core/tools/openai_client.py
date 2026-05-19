@@ -1,18 +1,20 @@
 import asyncio
 import functools
 import json
-from typing import Any, Callable, Dict, List, Optional
+import os
+from typing import Any, Callable, Dict, List, Optional, Union
 
+import httpx
 from loguru import logger
 from openai import AsyncOpenAI
 
-from video_gen.core.configs.config import settings
 
+def retry(func: Callable, retry_times: int = 5, base_delay_s: float = 2.0) -> Callable:
+    """Retry decorator for async functions with exponential backoff."""
 
-def retry(func: Callable, retry_times: int = 3) -> Callable:
-    """Retry decorator for async functions."""
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
+        last_exc: Optional[BaseException] = None
         for i in range(retry_times):
             try:
                 if asyncio.iscoroutinefunction(func):
@@ -20,12 +22,13 @@ def retry(func: Callable, retry_times: int = 3) -> Callable:
                 else:
                     return func(*args, **kwargs)
             except Exception as e:
-                logger.error(
-                    f"Error calling {func.__name__} "
-                    f"(attempt {i + 1}/{retry_times}): {e}. Args: {args}. Kwargs: {kwargs}"
-                )
-                await asyncio.sleep(1)
+                last_exc = e
+                logger.warning(f"{func.__name__} failed (attempt {i + 1}/{retry_times}): {e}")
+                if i < retry_times - 1:
+                    delay = min(base_delay_s * (2**i), 120.0)
+                    await asyncio.sleep(delay)
 
+        logger.error(f"{func.__name__} exhausted retries ({retry_times} attempts): {last_exc}")
         return None
 
     def wrapper_sync(*args, **kwargs):
@@ -35,6 +38,18 @@ def retry(func: Callable, retry_times: int = 3) -> Callable:
         return wrapper
     else:
         return wrapper_sync
+
+
+def default_openai_http_timeout() -> httpx.Timeout:
+    """Long read timeout for large prompts / slow routing providers (e.g. OpenRouter + Gemini)."""
+    read_s = float(os.environ.get("OPENAI_HTTP_READ_TIMEOUT", "900"))
+    connect_s = float(os.environ.get("OPENAI_HTTP_CONNECT_TIMEOUT", "60"))
+    return httpx.Timeout(
+        connect=connect_s,
+        read=read_s,
+        write=min(read_s, 300.0),
+        pool=connect_s,
+    )
 
 
 def extract_json_object(input_str: str, fixed_quotes: bool = False) -> Dict[str, Any]:
@@ -169,7 +184,10 @@ class OpenAIClient:
         **kwargs,
     ) -> None:
         self._model_name = model_name
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, **kwargs)
+        timeout: Union[float, httpx.Timeout, None] = kwargs.pop("timeout", None)
+        if timeout is None:
+            timeout = default_openai_http_timeout()
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=timeout, **kwargs)
 
     @retry
     async def async_generate(self, instruction: str, user_input: str, **kwargs) -> str | None:
